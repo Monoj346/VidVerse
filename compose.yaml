@@ -1,0 +1,170 @@
+services:
+
+  video-temp-init:
+    image: videotube-api:local
+
+    container_name: videotube-video-temp-init
+
+    user: root
+
+    command:
+      - sh
+      - -c
+      - |
+        mkdir -p /app/public/temp
+        chown -R node:node /app/public/temp
+
+    volumes:
+      - video-temp:/app/public/temp
+
+    networks:
+      - videotube-network
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    image: videotube-api:local
+
+    container_name: videotube-api
+
+    env_file:
+      - .env
+
+    environment:
+      NODE_ENV: production
+      PORT: 8000
+      REDIS_URL: redis://redis:6379
+      RABBITMQ_URL: amqp://videotube:videotube@rabbitmq:5672/videotube
+
+    volumes:
+      - video-temp:/app/public/temp
+
+    ports:
+      - "8000:8000"
+
+    depends_on:
+
+      video-temp-init:
+        condition: service_completed_successfully
+
+      redis:
+        condition: service_healthy
+
+      rabbitmq:
+        condition: service_healthy
+
+    restart: unless-stopped
+
+    networks:
+      - videotube-network
+
+  video-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    image: videotube-api:local
+
+    container_name: videotube-video-worker
+
+    env_file:
+      - .env
+
+    environment:
+      NODE_ENV: production
+      REDIS_URL: redis://redis:6379
+      RABBITMQ_URL: amqp://videotube:videotube@rabbitmq:5672/videotube
+
+    volumes:
+      - video-temp:/app/public/temp
+
+    command: ["node", "src/workers/video.worker.js"]
+
+    depends_on:
+
+      video-temp-init:
+        condition: service_completed_successfully
+
+      redis:
+        condition: service_healthy
+
+      rabbitmq:
+        condition: service_healthy
+
+    restart: unless-stopped
+
+    networks:
+      - videotube-network
+
+  redis:
+    image: redis:7-alpine
+
+    container_name: videotube-redis
+
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+
+    volumes:
+      - redis-data:/data
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "redis-cli",
+          "ping"
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+    restart: unless-stopped
+
+    networks:
+      - videotube-network
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+
+    container_name: videotube-rabbitmq
+
+    environment:
+      RABBITMQ_DEFAULT_USER: videotube
+      RABBITMQ_DEFAULT_PASS: videotube
+      RABBITMQ_DEFAULT_VHOST: videotube
+
+    ports:
+      - "15672:15672"
+
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "rabbitmq-diagnostics",
+          "-q",
+          "ping"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+    restart: unless-stopped
+
+    networks:
+      - videotube-network
+
+volumes:
+  redis-data:
+  rabbitmq-data:
+  video-temp:
+
+networks:
+  videotube-network:
+    driver: bridge
